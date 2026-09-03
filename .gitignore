@@ -1,0 +1,7 @@
+# Local card artwork. Do not commit or redistribute these files.
+Cards/
+cardback.png
+card-printer/cardback.png
+
+# Generated output
+*.pdf

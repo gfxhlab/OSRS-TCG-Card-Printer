@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OSRS TCG card printer</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.45 system-ui, sans-serif; }
+    body { max-width: 850px; margin: 0 auto; padding: 32px 20px 48px; color: #eee; background: #171717; }
+    h1 { margin: 0 0 6px; font-size: 1.8rem; }
+    .muted { color: #aaa; }
+    .drop { margin: 24px 0; padding: 30px; border: 2px dashed #777; border-radius: 12px; text-align: center; background: #202020; cursor: pointer; }
+    .drop.over, .drop:hover { border-color: #63b4e8; background: #18242d; }
+    button, .button { display: inline-block; border: 0; border-radius: 7px; padding: 10px 14px; color: #171717; background: #63b4e8; font: inherit; font-weight: 700; cursor: pointer; }
+    button.secondary { color: #eee; background: #383838; }
+    input[type=file] { display: none; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 16px 0; }
+    .panel { padding: 18px; border-radius: 10px; background: #222; }
+    ol { margin: 12px 0 0; padding-left: 28px; columns: 2; }
+    li { padding: 3px 0; break-inside: avoid; }
+    #status { min-height: 1.5em; margin-top: 16px; color: #8ac9f0; }
+    code { padding: 2px 5px; border-radius: 4px; background: #333; }
+    @media (max-width: 600px) { ol { columns: 1; } }
+  </style>
+</head>
+<body>
+  <h1>OSRS TCG card printer</h1>
+  <div class="muted">Lossless A4 PDFs, up to 9 cards per sheet. <a href="https://github.com/gfxhlab/OSRS-TCG-Card-Printer" target="_blank" rel="noopener">View the GitHub repository</a>.</div>
+
+  <div class="panel" style="margin-top:20px">
+    <strong>Print specifications</strong><br>
+    Finished card size: <strong>59 × 86 mm</strong><br>
+    Bleed: <strong>3 mm</strong> on each side<br>
+    Gap between trim edges: <strong>6 mm</strong><br>
+    Paper: <strong>A4, 210 × 297 mm</strong><br>
+    Layout: <strong>3 × 3 cards</strong>
+  </div>
+
+  <div class="panel" style="margin-top:16px">
+    <strong>Image source and usage</strong><br>
+    On <a href="https://osrs-tcg.net" target="_blank" rel="noopener">osrs-tcg.net</a>, use <strong>Inspect Card</strong>, then <strong>Save PNG</strong> and import the saved PNG here.<br><br>
+    <strong>Personal use only.</strong> Do not sell, redistribute, or monetize these cards or images.<br>
+    <span class="muted">Created using intellectual property belonging to Jagex Limited under the terms of <a href="https://legal.jagex.com/docs/policies/fan-content-policy" target="_blank" rel="noopener">Jagex's Fan Content Policy</a>. This content is not endorsed by or affiliated with Jagex.</span><br>
+    <span class="muted">Files stay in your browser and are not uploaded by this tool.</span>
+  </div>
+
+  <div id="drop" class="drop" role="button" tabindex="0">
+    <strong>Drop card fronts here</strong><br>
+    <span class="muted">PNG files only, up to 9 cards</span>
+    <div class="row" style="justify-content:center; margin-bottom:0">
+      <label class="button" for="fronts">Choose front images</label>
+      <input id="fronts" type="file" accept="image/png" multiple>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label><input id="includeBack" type="checkbox"> Include card backs</label>
+    <div class="row">
+      <label class="button secondary" for="back">Choose cardback.png</label>
+      <input id="back" type="file" accept="image/png">
+      <span id="backName" class="muted">No card back selected</span>
+    </div>
+    <span class="muted">Cards trim to exactly 59 × 86 mm, with 3 mm bleed, 6 mm trim gaps, and trim marks. PNG output is lossless and never downsampled.</span>
+  </div>
+
+  <div class="panel" style="margin-top:16px">
+    <strong>Fronts selected: <span id="count">0</span>/9</strong>
+    <ol id="list"><li class="muted">None yet</li></ol>
+  </div>
+
+  <div class="row">
+    <button id="generate">Generate PDF</button>
+    <button id="clear" class="secondary">Clear</button>
+  </div>
+  <div id="status" aria-live="polite"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js" integrity="sha256-D5pcrQeUHwgmWGyU4InYm5GMRuXBfPLVo8b2ZuO8aU8=" crossorigin="anonymous"></script>
+  <script>
+    const MM = 72 / 25.4;
+    const PAGE_W = 210 * MM, PAGE_H = 297 * MM;
+    const CARD_W = 59 * MM, CARD_H = 86 * MM, GAP = 6 * MM, BLEED = 3 * MM;
+    const ART_W = CARD_W + 2 * BLEED, ART_H = CARD_H + 2 * BLEED;
+    const MARGIN_X = (PAGE_W - 3 * CARD_W - 2 * GAP) / 2;
+    const MARGIN_Y = (PAGE_H - 3 * CARD_H - 2 * GAP) / 2;
+    const fronts = [];
+    let back = null;
+
+    const $ = id => document.getElementById(id);
+    const supported = file => file.type === 'image/png' || /\.png$/i.test(file.name);
+
+    function showStatus(text, error = false) {
+      $('status').textContent = text;
+      $('status').style.color = error ? '#ff8d8d' : '#8ac9f0';
+    }
+
+    function renderList() {
+      $('count').textContent = fronts.length;
+      $('list').innerHTML = fronts.length
+        ? fronts.map(({ file }) => `<li>${escapeHtml(file.name)}</li>`).join('')
+        : '<li class="muted">None yet</li>';
+    }
+
+    function escapeHtml(value) {
+      return value.replace(/[&<>"']/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#039;' })[char]);
+    }
+
+    function addFronts(files) {
+      for (const file of files) {
+        if (fronts.length >= 9) break;
+        if (!supported(file)) continue;
+        if (fronts.some(item => item.file.name === file.name && item.file.size === file.size)) continue;
+        fronts.push({ file });
+      }
+      renderList();
+      showStatus(fronts.length ? `${fronts.length} front image${fronts.length === 1 ? '' : 's'} ready.` : 'Drop PNG card fronts here.');
+    }
+
+    function readFile(file) {
+      return file.arrayBuffer();
+    }
+
+    async function embedWithBleed(pdf, bytes) {
+      const source = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+      const targetRatio = CARD_W / CARD_H;
+      const sourceRatio = source.width / source.height;
+      const contentWidth = sourceRatio > targetRatio ? Math.round(source.height * targetRatio) : source.width;
+      const contentHeight = sourceRatio < targetRatio ? Math.round(source.width / targetRatio) : source.height;
+      const sourceX = Math.floor((source.width - contentWidth) / 2);
+      const sourceY = Math.floor((source.height - contentHeight) / 2);
+      const bleedX = Math.max(1, Math.round(contentWidth * 3 / 59));
+      const bleedY = Math.max(1, Math.round(contentHeight * 3 / 86));
+      const canvas = document.createElement('canvas');
+      canvas.width = contentWidth + bleedX * 2;
+      canvas.height = contentHeight + bleedY * 2;
+      const context = canvas.getContext('2d');
+      context.imageSmoothingEnabled = false;
+      context.drawImage(source, sourceX, sourceY, contentWidth, contentHeight, bleedX, bleedY, contentWidth, contentHeight);
+      context.drawImage(source, sourceX, sourceY, contentWidth, 1, bleedX, 0, contentWidth, bleedY);
+      context.drawImage(source, sourceX, sourceY + contentHeight - 1, contentWidth, 1, bleedX, bleedY + contentHeight, contentWidth, bleedY);
+      context.drawImage(source, sourceX, sourceY, 1, contentHeight, 0, bleedY, bleedX, contentHeight);
+      context.drawImage(source, sourceX + contentWidth - 1, sourceY, 1, contentHeight, bleedX + contentWidth, bleedY, bleedX, contentHeight);
+      context.drawImage(source, sourceX, sourceY, 1, 1, 0, 0, bleedX, bleedY);
+      context.drawImage(source, sourceX + contentWidth - 1, sourceY, 1, 1, bleedX + contentWidth, 0, bleedX, bleedY);
+      context.drawImage(source, sourceX, sourceY + contentHeight - 1, 1, 1, 0, bleedY + contentHeight, bleedX, bleedY);
+      context.drawImage(source, sourceX + contentWidth - 1, sourceY + contentHeight - 1, 1, 1, bleedX + contentWidth, bleedY + contentHeight, bleedX, bleedY);
+      const png = await new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not create lossless PNG')), 'image/png'));
+      source.close?.();
+      return pdf.embedPng(await png.arrayBuffer());
+    }
+
+    async function embed(pdf, file) {
+      return embedWithBleed(pdf, await readFile(file));
+    }
+
+    function drawCutGuides(page, count) {
+      const color = PDFLib.rgb(0.2, 0.2, 0.2);
+      const vertical = new Map(), horizontal = new Map();
+      const add = (map, key, start, end) => map.set(key, [...(map.get(key) || []), [start, end]]);
+      for (let index = 0; index < count; index++) {
+        const p = position(index % 3, Math.floor(index / 3));
+        add(vertical, p.x, p.y, p.y + CARD_H);
+        add(vertical, p.x + CARD_W, p.y, p.y + CARD_H);
+        add(horizontal, p.y, p.x, p.x + CARD_W);
+        add(horizontal, p.y + CARD_H, p.x, p.x + CARD_W);
+      }
+      const drawGaps = (lines, horizontalLine) => {
+        for (const [coordinate, intervals] of lines) {
+          intervals.sort((a, b) => a[0] - b[0]);
+          let cursor = 0;
+          for (const [start, end] of intervals) {
+            if (start > cursor) {
+              const startPoint = horizontalLine ? { x: cursor, y: coordinate } : { x: coordinate, y: cursor };
+              const endPoint = horizontalLine ? { x: start, y: coordinate } : { x: coordinate, y: start };
+              page.drawLine({ start: startPoint, end: endPoint, thickness: 0.5, color });
+            }
+            cursor = Math.max(cursor, end);
+          }
+          const endPoint = horizontalLine ? { x: PAGE_W, y: coordinate } : { x: coordinate, y: PAGE_H };
+          const startPoint = horizontalLine ? { x: cursor, y: coordinate } : { x: coordinate, y: cursor };
+          if ((horizontalLine ? PAGE_W : PAGE_H) > cursor) page.drawLine({ start: startPoint, end: endPoint, thickness: 0.5, color });
+        }
+      };
+      drawGaps(vertical, false);
+      drawGaps(horizontal, true);
+    }
+
+    function position(column, row) {
+      return {
+        x: MARGIN_X + column * (CARD_W + GAP),
+        y: PAGE_H - MARGIN_Y - CARD_H - row * (CARD_H + GAP)
+      };
+    }
+
+    async function generatePdf() {
+      if (!fronts.length) {
+        showStatus('Add at least one card front first.', true);
+        return;
+      }
+      $('generate').disabled = true;
+      showStatus('Embedding original images and building PDF...');
+      try {
+        const pdf = await PDFLib.PDFDocument.create();
+        pdf.setTitle('OSRS TCG cards - A4');
+        pdf.setSubject('59 x 86 mm card print layout with 3 mm bleed and trim marks');
+        const frontImages = await Promise.all(fronts.map(({ file }) => embed(pdf, file)));
+        const frontPage = pdf.addPage([PAGE_W, PAGE_H]);
+        frontImages.forEach((image, index) => {
+          const p = position(index % 3, Math.floor(index / 3));
+          frontPage.drawImage(image, { x: p.x - BLEED, y: p.y - BLEED, width: ART_W, height: ART_H });
+        });
+        drawCutGuides(frontPage, fronts.length);
+
+        const includeBack = $('includeBack').checked;
+        if (includeBack) {
+          if (!back) throw new Error('Choose a PNG card back or turn off Include card backs');
+          const backImage = await embed(pdf, back);
+          const backPage = pdf.addPage([PAGE_W, PAGE_H]);
+          fronts.forEach((_, index) => {
+            const p = position(index % 3, Math.floor(index / 3));
+            backPage.drawImage(backImage, { x: p.x - BLEED, y: p.y - BLEED, width: ART_W, height: ART_H });
+          });
+          drawCutGuides(backPage, fronts.length);
+        }
+
+        const bytes = await pdf.save({ useObjectStreams: false });
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const stamp = new Date().toISOString().replace(/[-:.]/g, '');
+        link.download = `osrs-tcg-cards-${stamp}.pdf`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        showStatus(`Done. ${includeBack ? '2 pages' : '1 page'} downloaded. Print at 100% / Actual size.`);
+      } catch (error) {
+        console.error(error);
+        showStatus(`Could not create PDF: ${error.message}`, true);
+      } finally {
+        $('generate').disabled = false;
+      }
+    }
+
+    $('fronts').addEventListener('change', event => addFronts([...event.target.files]));
+    $('back').addEventListener('change', event => {
+      const file = event.target.files[0];
+      if (!file) return;
+      if (!supported(file)) return showStatus('The card back must be a PNG.', true);
+      back = file;
+      $('backName').textContent = file.name;
+      showStatus('Card back ready.');
+    });
+    $('drop').addEventListener('dragover', event => { event.preventDefault(); $('drop').classList.add('over'); });
+    $('drop').addEventListener('dragleave', () => $('drop').classList.remove('over'));
+    $('drop').addEventListener('drop', event => {
+      event.preventDefault();
+      $('drop').classList.remove('over');
+      addFronts([...event.dataTransfer.files]);
+    });
+    $('drop').addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') $('fronts').click(); });
+    $('generate').addEventListener('click', generatePdf);
+    $('clear').addEventListener('click', () => {
+      fronts.length = 0;
+      back = null;
+      $('fronts').value = '';
+      $('back').value = '';
+      $('backName').textContent = 'No card back selected';
+      renderList();
+      showStatus('Cleared.');
+    });
+    renderList();
+  </script>
+</body>
+</html>
